@@ -18,6 +18,10 @@ portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 volatile float accelDataX = 0.0;
 volatile float accelDataY = 0.0;
 volatile float accelDataZ = 0.0;
+
+volatile unsigned int readingsCount = 0;
+unsigned long lastTime = 0;
+unsigned int readingsPerMinute = 0;
  
 void task1(void *pvParameters) {
   (void)pvParameters;
@@ -58,7 +62,7 @@ void task2(void *pvParameters) {
     float x = accelDataX;
     float y = accelDataY;
     float z = accelDataZ;
- 
+    readingsCount++;
     portEXIT_CRITICAL(&mux);
  
     sprintf(cMsg, "%0.2f;%0.2f;%0.2f", x, y, z );
@@ -111,4 +115,14 @@ void setup() {
  
 void loop() {
   // O loop principal é deixado vazio, já que as tasks estão sendo executadas nos núcleos separados
+
+  /* verificação de leituras por minuto */
+  if (millis() - lastTime >= 60000) {
+    lastTime = millis();
+    readingsPerMinute = readingsCount;
+    readingsCount = 0; // reseta contador
+
+    Serial.print("Leituras por minuto: ");
+    Serial.println(readingsPerMinute);
+  }
 }
