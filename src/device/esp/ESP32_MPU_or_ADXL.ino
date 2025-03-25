@@ -1,114 +1,139 @@
+#include <stdint.h>
+
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_ADXL345_U.h>
- 
-String acc = "";
- 
-volatile int line = 0;
- 
-// Objetos do acelerômetro
-Adafruit_MPU6050 accelMPU;
-Adafruit_ADXL345_Unified accelADXL = Adafruit_ADXL345_Unified(12345);
- 
-// Mutex para garantir acesso exclusivo às variáveis compartilhadas
-portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
- 
-// Variáveis compartilhadas entre os núcleos
-volatile float accelDataX = 0.0;
-volatile float accelDataY = 0.0;
-volatile float accelDataZ = 0.0;
- 
-void task1(void *pvParameters) {
-  (void)pvParameters;
- 
-  sensors_event_t event, g, temp;
+
+/*  DEFINES */
+#define ACC_MPU         "MPU"
+#define ACC_ADXL        "ADXL"
+#define SERIAL_BAUDRATE 921600
+#define INIT_DELAY_MS   500
+#define MPU_DELAY_US    320
+#define ADXL_DELAY_US   160
+
+/* TYPES */
+typedef enum {
+  ACCEL_UNKNOWN,
+  ACCEL_MPU6050,
+  ACCEL_ADXL345
+} AccType;
+
+typedef struct {
+  float x;
+  float y;
+  float z;
+} AccData;
+
+/* GLOBAL VARS */
+portMUX_TYPE mux  = portMUX_INITIALIZER_UNLOCKED;
+AccData accData   = {0};
+AccType accType   = ACCEL_UNKNOWN;
+
+Adafruit_MPU6050          accelMPU;
+Adafruit_ADXL345_Unified  accelADXL = Adafruit_ADXL345_Unified(12345);
+
+unsigned int readingsCount      = 0;
+unsigned long lastTime          = 0;
+unsigned int readingsPerMinute  = 0;
+
+void AccReader(void *pvParameters) {
+  sensors_event_t event = {0};
+  sensors_event_t g     = {0};
+  sensors_event_t temp  = {0};
  
   while (1) {
     // Leitura dos dados do acelerômetro
-    if(acc == "MPU"){
-      accelMPU.getEvent(&event, &g, &temp);
-    } else{
-      accelADXL.getEvent(&event);
-    }
- 
+    if      (accType == ACCEL_MPU6050) accelMPU.getEvent(&event, &g, &temp);
+    else if (accType == ACCEL_ADXL345) accelADXL.getEvent(&event);
+    
     // Aquisição do mutex para garantir acesso exclusivo às variáveis compartilhadas
     portENTER_CRITICAL(&mux);
-    accelDataX = event.acceleration.x;
-    accelDataY = event.acceleration.y;
-    accelDataZ = event.acceleration.z;
+      accData.x = event.acceleration.x;
+      accData.y = event.acceleration.y;
+      accData.z = event.acceleration.z;
     portEXIT_CRITICAL(&mux);
- 
   }
 }
  
-void task2(void *pvParameters) {
-  (void)pvParameters;
-  char cMsg[254];
-  line++;
-  int delay = 320;
- 
-  if(acc == "ADXL"){
-    delay = 160;
-  } 
+void AccSender(void *pvParameters) {
+  uint8_t   buffer[20] = {0};
+  uint16_t  delay      = (accType == ACCEL_MPU6050) ? MPU_DELAY_US : ADXL_DELAY_US;
  
   while (1) {
     // Aquisição do mutex para garantir acesso exclusivo às variáveis compartilhadas
     portENTER_CRITICAL(&mux);
-    float x = accelDataX;
-    float y = accelDataY;
-    float z = accelDataZ;
- 
+    AccData currentData = accData;
+    readingsCount++;
     portEXIT_CRITICAL(&mux);
  
-    sprintf(cMsg, "%0.2f;%0.2f;%0.2f", x, y, z );
-    //sprintf(cMsg, "%0.2f;%0.2f;%0.2f", x, y, z);
-    Serial.println(cMsg);
+    snprintf((char *)buffer, sizeof(buffer), "%0.2f;%0.2f;%0.2f", currentData.x, currentData.y, currentData.z);
+    Serial.println((char *)buffer);
+
     delayMicroseconds(delay);
   }
+}
+
+bool initMPU6050() {
+  if (!accelMPU.begin()) return false;
+
+  accelMPU.setAccelerometerRange(MPU6050_RANGE_2_G);
+  accelMPU.setGyroRange(MPU6050_RANGE_500_DEG);
+  accelMPU.setFilterBandwidth(MPU6050_BAND_5_HZ);
+
+  return true;
+}
+
+bool initADXL345() {
+  if (!accelADXL.begin()) return false;
+
+  accelADXL.setRange(ADXL345_RANGE_2_G);
+  accelADXL.setDataRate(ADXL345_DATARATE_1600_HZ);
+
+  return true;
 }
  
  
 void setup() {
-  Serial.begin(921600);
-  //Serial.begin(230400);  
-  delay(1000);
+  Serial.begin(SERIAL_BAUDRATE);
+  delay(INIT_DELAY_MS);
+
   // Inicialização do acelerômetro
-  Serial.println("Testando inicio");
- 
-    if (!accelMPU.begin()) {
-      Serial.println("Falha ao iniciar o MPU6050!");
- 
-      if (!accelADXL.begin()) {
-        Serial.println("Falha ao iniciar o ADXL345!");
-        while (1){
-          Serial.println("Falha ao iniciar os dois!");
-          delay(1000);
-        }
-      }
-      else {
-        acc = "ADXL";
-      }
- 
-    } else {
-      acc = "MPU";
+  Serial.println("Iniciando acelerômetro...");
+
+  if (initMPU6050()) {
+    accType = ACCEL_MPU6050;
+    Serial.println("MPU6050 iniciado com sucesso!");
+  } else if (initADXL345()) {
+    accType = ACCEL_ADXL345;
+    Serial.println("ADXL345 iniciado com sucesso!");
+  } else {
+    Serial.println("Falha ao iniciar os dois!");
+    
+    while (1) {
+      Serial.println("Falha ao iniciar os dois!");
+      delay(1000);
     }
-  delay(500); 
-  if(acc == "MPU"){
-    accelMPU.setAccelerometerRange(MPU6050_RANGE_2_G);
-    accelMPU.setGyroRange(MPU6050_RANGE_500_DEG);
-    accelMPU.setFilterBandwidth(MPU6050_BAND_5_HZ);
-  } else { 
-    accelADXL.setRange(ADXL345_RANGE_2_G);
-    accelADXL.setDataRate(ADXL345_DATARATE_1600_HZ);
   }
-  delay(500);
+
+  delay(INIT_DELAY_MS);
  
   // Criação das tasks
-  xTaskCreatePinnedToCore(task1, "Task1", 10000, NULL, 1, NULL, 0); // Task 1 no núcleo 0
-  xTaskCreatePinnedToCore(task2, "Task2", 10000, NULL, 1, NULL, 1); // Task 2 no núcleo 1
+  xTaskCreatePinnedToCore(AccReader, "AccReader", 10000, NULL, 1, NULL, 0); // Task 1 no núcleo 0
+  xTaskCreatePinnedToCore(AccSender, "AccSender", 10000, NULL, 1, NULL, 1); // Task 2 no núcleo 1
 }
  
 void loop() {
   // O loop principal é deixado vazio, já que as tasks estão sendo executadas nos núcleos separados
+
+  /* verificação de leituras por minuto */
+  if (millis() - lastTime >= 60000) {
+    lastTime = millis();
+    readingsPerMinute = readingsCount;
+    readingsCount = 0; // reseta contador
+
+    Serial.print("Leituras por minuto: ");
+    Serial.println(readingsPerMinute);
+  }
 }
