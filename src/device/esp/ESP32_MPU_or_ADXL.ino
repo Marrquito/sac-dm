@@ -6,12 +6,9 @@
 #include <Adafruit_ADXL345_U.h>
 
 /*  DEFINES */
-#define ACC_MPU         "MPU"
-#define ACC_ADXL        "ADXL"
 #define SERIAL_BAUDRATE 921600
+#define BUFFER_SIZE     1000
 #define INIT_DELAY_MS   500
-#define MPU_DELAY_US    320
-#define ADXL_DELAY_US   160
 
 /* TYPES */
 typedef enum {
@@ -28,50 +25,83 @@ typedef struct {
 
 /* GLOBAL VARS */
 portMUX_TYPE mux  = portMUX_INITIALIZER_UNLOCKED;
-AccData accData   = {0};
-AccType accType   = ACCEL_UNKNOWN;
 
 Adafruit_MPU6050          accelMPU;
 Adafruit_ADXL345_Unified  accelADXL = Adafruit_ADXL345_Unified(12345);
 
-unsigned int readingsCount      = 0;
+AccData ringBuffer[BUFFER_SIZE] = {0};
+AccType accType                 = ACCEL_UNKNOWN;
+
+volatile uint16_t bufferHead = 0;  
+volatile uint16_t bufferTail = 0;
+
+unsigned int  readingsCount     = 0;
 unsigned long lastTime          = 0;
-unsigned int readingsPerMinute  = 0;
+unsigned int  readingsPerMinute = 0;
+
+bool isValidData(AccData data) {
+  return !(isnan(data.x) || isnan(data.y) || isnan(data.z) || 
+           isinf(data.x) || isinf(data.y) || isinf(data.z));
+}
 
 void AccReader(void *pvParameters) {
-  sensors_event_t event = {0};
-  sensors_event_t g     = {0};
+  sensors_event_t acc   = {0};
+  sensors_event_t gyro  = {0};
   sensors_event_t temp  = {0};
  
   while (1) {
-    // Leitura dos dados do acelerômetro
-    if      (accType == ACCEL_MPU6050) accelMPU.getEvent(&event, &g, &temp);
-    else if (accType == ACCEL_ADXL345) accelADXL.getEvent(&event);
+    // lendo dados do sensor
+    if      (accType == ACCEL_MPU6050) accelMPU.getEvent(&acc, &gyro, &temp);
+    else if (accType == ACCEL_ADXL345) accelADXL.getEvent(&acc);
     
-    // Aquisição do mutex para garantir acesso exclusivo às variáveis compartilhadas
+    AccData newData = { acc.acceleration.x, acc.acceleration.y, acc.acceleration.z };
+    
+    if (!isValidData(newData)) {
+      Serial.println("Dados inválidos!");
+      
+      vTaskDelay(pdMS_TO_TICKS(5));
+      
+      continue;
+    }
+
     portENTER_CRITICAL(&mux);
-      accData.x = event.acceleration.x;
-      accData.y = event.acceleration.y;
-      accData.z = event.acceleration.z;
+      int nextIndex = (bufferHead + 1) % BUFFER_SIZE;
+      
+      if (nextIndex == bufferTail) {  // verifica se o ring buffer está cheio
+        bufferTail = (bufferTail + 1) % BUFFER_SIZE; // descarta mais antigo
+      } 
+
+      ringBuffer[bufferHead] = newData;
+      bufferHead = nextIndex;
     portEXIT_CRITICAL(&mux);
+
+    vTaskDelay(pdMS_TO_TICKS(5)); // evitar sobrecarga do processador
   }
 }
  
 void AccSender(void *pvParameters) {
-  uint8_t   buffer[20] = {0};
-  uint16_t  delay      = (accType == ACCEL_MPU6050) ? MPU_DELAY_US : ADXL_DELAY_US;
+  uint8_t bufferStr[32] = {0};
+  AccData currentData   = {0};
  
   while (1) {
-    // Aquisição do mutex para garantir acesso exclusivo às variáveis compartilhadas
-    portENTER_CRITICAL(&mux);
-    AccData currentData = accData;
-    readingsCount++;
-    portEXIT_CRITICAL(&mux);
- 
-    snprintf((char *)buffer, sizeof(buffer), "%0.2f;%0.2f;%0.2f", currentData.x, currentData.y, currentData.z);
-    Serial.println((char *)buffer);
+    uint8_t hasData = 0;
 
-    delayMicroseconds(delay);
+    portENTER_CRITICAL(&mux);
+      if (bufferHead != bufferTail) {  // verifica se o ring buffer não está vazio
+        currentData = ringBuffer[bufferTail];
+        
+        bufferTail = (bufferTail + 1) % BUFFER_SIZE;
+        hasData = 1;
+      }
+      readingsCount++;
+    portEXIT_CRITICAL(&mux);
+
+    if (hasData) {
+      snprintf((char *)bufferStr, sizeof(bufferStr), "%0.2f;%0.2f;%0.2f", currentData.x, currentData.y, currentData.z);
+      Serial.println((char *)bufferStr);
+    }
+ 
+    vTaskDelay(pdMS_TO_TICKS(5));
   }
 }
 
@@ -125,8 +155,6 @@ void setup() {
 }
  
 void loop() {
-  // O loop principal é deixado vazio, já que as tasks estão sendo executadas nos núcleos separados
-
   /* verificação de leituras por minuto */
   if (millis() - lastTime >= 60000) {
     lastTime = millis();
