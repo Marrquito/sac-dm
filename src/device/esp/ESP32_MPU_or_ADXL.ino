@@ -53,6 +53,7 @@ void AccReader(void *pvParameters) {
       accData.x = event.acceleration.x;
       accData.y = event.acceleration.y;
       accData.z = event.acceleration.z;
+      readingsCount++;
     portEXIT_CRITICAL(&mux);
   }
 }
@@ -64,8 +65,7 @@ void AccSender(void *pvParameters) {
   while (1) {
     // Aquisição do mutex para garantir acesso exclusivo às variáveis compartilhadas
     portENTER_CRITICAL(&mux);
-    AccData currentData = accData;
-    readingsCount++;
+      AccData currentData = accData;
     portEXIT_CRITICAL(&mux);
  
     snprintf((char *)buffer, sizeof(buffer), "%0.2f;%0.2f;%0.2f", currentData.x, currentData.y, currentData.z);
