@@ -41,6 +41,7 @@ void task1(void *pvParameters) {
     accelDataX = event.acceleration.x;
     accelDataY = event.acceleration.y;
     accelDataZ = event.acceleration.z;
+    readingsCount++;
     portEXIT_CRITICAL(&mux);
  
   }
@@ -62,7 +63,6 @@ void task2(void *pvParameters) {
     float x = accelDataX;
     float y = accelDataY;
     float z = accelDataZ;
-    readingsCount++;
     portEXIT_CRITICAL(&mux);
  
     sprintf(cMsg, "%0.2f;%0.2f;%0.2f", x, y, z );
