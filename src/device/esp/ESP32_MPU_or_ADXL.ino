@@ -73,6 +73,7 @@ void AccReader(void *pvParameters) {
 
       ringBuffer[bufferHead] = newData;
       bufferHead = nextIndex;
+      readingsCount++;
     portEXIT_CRITICAL(&mux);
 
     vTaskDelay(pdMS_TO_TICKS(5)); // evitar sobrecarga do processador
@@ -93,7 +94,6 @@ void AccSender(void *pvParameters) {
         bufferTail = (bufferTail + 1) % BUFFER_SIZE;
         hasData = 1;
       }
-      readingsCount++;
     portEXIT_CRITICAL(&mux);
 
     if (hasData) {
